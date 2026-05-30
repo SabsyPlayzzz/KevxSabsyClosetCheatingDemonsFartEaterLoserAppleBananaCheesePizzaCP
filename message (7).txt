@@ -1,0 +1,266 @@
+--!nocheck
+--[[
+    Standalone "Hit Boxes + Reach" — combined, ALWAYS ON.
+
+    Merges hitboxes_standalone.luau and reach_standalone.luau into one script.
+      - NO keybind / NO toggle: everything turns on automatically the moment it runs.
+      - All functionality kept:
+          Hit Boxes  -> Player mode (welded boxes) OR Sword mode (swing-region expand)
+          Reach      -> Sword reach + optional Placement / Break reach
+
+    Framework dependencies (vape / bedwars / entitylib / GUI) are resolved without Vape
+    via direct requires + a GC scan. Just run it in your executor and edit CONFIG.
+]]
+
+local Players = game:GetService('Players')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+
+local lplr = Players.LocalPlayer
+
+--============================ CONFIG ============================--
+local CONFIG = {
+	-- ===== Hit Boxes =====
+	HitboxMode = 'Player',   -- 'Player' (welded boxes) or 'Sword' (swing-region expand)
+	HitboxExpand = 14.4,     -- 0 .. 14.4 studs
+	HitboxTransparency = 1,  -- 1 = invisible (original). Lower it to SEE the boxes.
+
+	-- ===== Reach =====
+	SwordReach = true,       -- applied distance = SwordRange + 2 (off = 14.4). Keep <= 18.
+	SwordRange = 18,
+	PlacementReach = false,  -- when off the game uses 24
+	PlacementRange = 30,
+	BreakReach = false,      -- when off the game uses 18
+	BreakRange = 30,
+}
+--===============================================================--
+
+local hitboxObjects = {}     -- [player] = Part
+local hitboxPlayerConns = {} -- [player] = CharacterAdded connection
+local reachOldGetMouseInfo   -- original BlockSelector method (so our hook can call it)
+
+----------------------------------------------------------------
+-- DEPENDENCY RESOLUTION (no Vape)
+----------------------------------------------------------------
+local function getSwordController()
+	if getgenv and getgenv().bedwars then
+		local ok, sc = pcall(function()
+			return getgenv().bedwars.SwordController
+		end)
+		if ok and sc then
+			return sc
+		end
+	end
+	if typeof(getgc) == 'function' then
+		for _, obj in getgc(true) do
+			if type(obj) == 'table' then
+				local ok, fn = pcall(rawget, obj, 'swingSwordInRegion')
+				if ok and type(fn) == 'function' then
+					return obj
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function getCombatConstant()
+	if getgenv and getgenv().bedwars then
+		local ok, cc = pcall(function()
+			return getgenv().bedwars.CombatConstant
+		end)
+		if ok and cc then
+			return cc
+		end
+	end
+	local ok, cc = pcall(function()
+		return require(ReplicatedStorage.TS.combat['combat-constant']).CombatConstant
+	end)
+	if ok and cc then
+		return cc
+	end
+	return nil
+end
+
+local function getBlockSelector()
+	if getgenv and getgenv().bedwars then
+		local ok, bs = pcall(function()
+			return getgenv().bedwars.BlockSelector
+		end)
+		if ok and bs and rawget(bs, 'getMouseInfo') then
+			return bs
+		end
+	end
+	if typeof(getgc) == 'function' then
+		for _, obj in getgc(true) do
+			if type(obj) == 'table' then
+				local ok, fn = pcall(rawget, obj, 'getMouseInfo')
+				if ok and type(fn) == 'function' then
+					return obj
+				end
+			end
+		end
+	end
+	return nil
+end
+
+----------------------------------------------------------------
+-- HIT BOXES
+----------------------------------------------------------------
+local function applyHitboxRegion()
+	if typeof(debug) ~= 'table' or typeof(debug.setconstant) ~= 'function' then
+		warn('[HitBoxes] Sword mode needs debug.setconstant — not supported. Set HitboxMode = "Player".')
+		return
+	end
+	local sc = getSwordController()
+	if not sc then
+		warn('[HitBoxes] SwordController not found. Set HitboxMode = "Player".')
+		return
+	end
+	pcall(debug.setconstant, sc.swingSwordInRegion, 6, (CONFIG.HitboxExpand / 3))
+end
+
+local function createHitbox(plr, char)
+	if plr == lplr or not char then
+		return
+	end
+	local root = char:FindFirstChild('HumanoidRootPart')
+	if not root then
+		return
+	end
+
+	-- replace any existing box (e.g. a stale one left over from the previous life)
+	if hitboxObjects[plr] then
+		hitboxObjects[plr]:Destroy()
+		hitboxObjects[plr] = nil
+	end
+
+	local hitbox = Instance.new('Part')
+	hitbox.Size = Vector3.new(3, 6, 3) + Vector3.one * (CONFIG.HitboxExpand / 5)
+	hitbox.CFrame = root.CFrame
+	hitbox.CanCollide = false
+	hitbox.Massless = true
+	hitbox.Transparency = CONFIG.HitboxTransparency
+	hitbox.Color = Color3.fromRGB(255, 40, 90)
+	hitbox.Material = Enum.Material.SmoothPlastic
+	-- weld BEFORE parenting so the massless part never free-falls / misaligns for a frame
+	local weld = Instance.new('Motor6D')
+	weld.Part0 = hitbox
+	weld.Part1 = root
+	weld.Parent = hitbox
+	hitbox.Parent = char
+	hitboxObjects[plr] = hitbox
+end
+
+local function onCharacterAdded(plr, char)
+	-- Wait for the rig to actually exist instead of guessing with a fixed 0.3s delay.
+	-- The fixed delay was the bug: on a slow death+respawn the HumanoidRootPart wasn't
+	-- ready yet, createHitbox bailed, and nothing ever retried -> hitbox vanished.
+	local root = char:WaitForChild('HumanoidRootPart', 10)
+	local hum = char:WaitForChild('Humanoid', 10)
+	if not (root and hum) or char.Parent == nil then
+		return
+	end
+	createHitbox(plr, char)
+	-- Drop the box the instant this character dies so no distorted box lingers on the
+	-- ragdoll/corpse; the next CharacterAdded rebuilds a fresh one on respawn.
+	hum.Died:Once(function()
+		if hitboxObjects[plr] then
+			hitboxObjects[plr]:Destroy()
+			hitboxObjects[plr] = nil
+		end
+	end)
+end
+
+local function trackPlayer(plr)
+	if plr == lplr then
+		return
+	end
+	hitboxPlayerConns[plr] = plr.CharacterAdded:Connect(function(char)
+		onCharacterAdded(plr, char)
+	end)
+	if plr.Character then
+		task.spawn(onCharacterAdded, plr, plr.Character)
+	end
+end
+
+local function startHitboxes()
+	if CONFIG.HitboxMode == 'Sword' then
+		applyHitboxRegion()
+		return
+	end
+	for _, plr in Players:GetPlayers() do
+		trackPlayer(plr)
+	end
+	Players.PlayerAdded:Connect(trackPlayer)
+	Players.PlayerRemoving:Connect(function(plr)
+		if hitboxObjects[plr] then
+			hitboxObjects[plr]:Destroy()
+			hitboxObjects[plr] = nil
+		end
+		if hitboxPlayerConns[plr] then
+			hitboxPlayerConns[plr]:Disconnect()
+			hitboxPlayerConns[plr] = nil
+		end
+	end)
+end
+
+----------------------------------------------------------------
+-- REACH
+----------------------------------------------------------------
+local function applySwordReach()
+	local cc = getCombatConstant()
+	if not cc then
+		warn('[Reach] CombatConstant not found — are you in a BedWars round?')
+		return
+	end
+	cc.RAYCAST_SWORD_CHARACTER_DISTANCE = (CONFIG.SwordReach and (CONFIG.SwordRange + 2)) or 14.4
+end
+
+local function installBlockHook()
+	local bs = getBlockSelector()
+	if not bs then
+		warn('[Reach] BlockSelector not found — placement/break reach unavailable (sword reach still works).')
+		return
+	end
+	reachOldGetMouseInfo = bs.getMouseInfo
+	bs.getMouseInfo = function(...)
+		local Self, Select, Args = ...
+		if not Args then
+			Args = {}
+		end
+		if Select == 0 then
+			Args.range = CONFIG.PlacementReach and CONFIG.PlacementRange or 24
+		elseif Select == 1 then
+			Args.range = CONFIG.BreakReach and CONFIG.BreakRange or 18
+		end
+		return reachOldGetMouseInfo(Self, Select, Args)
+	end
+end
+
+local function startReach()
+	applySwordReach()
+	installBlockHook()
+end
+
+-- Re-apply sword values after editing CONFIG live (placement/break read CONFIG automatically).
+local function refresh()
+	applySwordReach()
+	if CONFIG.HitboxMode == 'Sword' then
+		applyHitboxRegion()
+	end
+end
+
+----------------------------------------------------------------
+-- GO (always on)
+----------------------------------------------------------------
+startHitboxes()
+startReach()
+
+if getgenv then
+	getgenv().HitboxReach = {
+		config = CONFIG,
+		refresh = refresh,
+	}
+end
+
+print('[HitBoxes+Reach] Active — Hitbox: ' .. CONFIG.HitboxMode .. ' | SwordReach: ' .. tostring(CONFIG.SwordReach))
