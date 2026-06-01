@@ -22,15 +22,15 @@ local CONFIG = {
 	-- ===== Hit Boxes =====
 	HitboxMode = 'Player',   -- 'Player' (welded boxes) or 'Sword' (swing-region expand)
 	HitboxExpand = 14.4,     -- 0 .. 14.4 studs
-	HitboxTransparency = 1,  -- 1 = invisible (original). Lower it to SEE the boxes.
+	HitboxTransparency = 0.3,  -- 1 = invisible (original). Lower it to SEE the boxes.
 
 	-- ===== Reach =====
 	SwordReach = true,       -- applied distance = SwordRange + 2 (off = 14.4). Keep <= 18.
-	SwordRange = 18,
+	SwordRange = 15.12,
 	PlacementReach = false,  -- when off the game uses 24
-	PlacementRange = 30,
-	BreakReach = false,      -- when off the game uses 18
-	BreakRange = 30,
+	PlacementRange = 24,
+	BreakReach = 18,      -- when off the game uses 18
+	BreakRange = 24,
 }
 --===============================================================--
 
