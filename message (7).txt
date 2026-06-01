@@ -30,7 +30,7 @@ local CONFIG = {
 	PlacementReach = false,  -- when off the game uses 24
 	PlacementRange = 24,
 	BreakReach = 18,      -- when off the game uses 18
-	BreakRange = 24,
+	BreakRange = 18,
 }
 --===============================================================--
 
