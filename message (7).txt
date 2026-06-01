@@ -22,14 +22,14 @@ local CONFIG = {
 	-- ===== Hit Boxes =====
 	HitboxMode = 'Player',   -- 'Player' (welded boxes) or 'Sword' (swing-region expand)
 	HitboxExpand = 14.4,     -- 0 .. 14.4 studs
-	HitboxTransparency = 0.3,  -- 1 = invisible (original). Lower it to SEE the boxes.
+	HitboxTransparency = 1,  -- 1 = invisible (original). Lower it to SEE the boxes.
 
 	-- ===== Reach =====
 	SwordReach = true,       -- applied distance = SwordRange + 2 (off = 14.4). Keep <= 18.
-	SwordRange = 15.12,
+	SwordRange = 15.3,
 	PlacementReach = false,  -- when off the game uses 24
 	PlacementRange = 24,
-	BreakReach = 18,      -- when off the game uses 18
+	BreakReach = false,      -- when off the game uses 18
 	BreakRange = 18,
 }
 --===============================================================--
@@ -213,7 +213,15 @@ local function applySwordReach()
 		warn('[Reach] CombatConstant not found — are you in a BedWars round?')
 		return
 	end
-	cc.RAYCAST_SWORD_CHARACTER_DISTANCE = (CONFIG.SwordReach and (CONFIG.SwordRange + 2)) or 14.4
+	local target = (CONFIG.SwordReach and (CONFIG.SwordRange + 2)) or 14.4
+	local ok, err = pcall(function()
+		cc.RAYCAST_SWORD_CHARACTER_DISTANCE = target
+	end)
+	if not ok then
+		warn('[Reach] Failed to write reach constant (table may be frozen): ' .. tostring(err))
+		return
+	end
+	print('[Reach] Client raycast distance = ' .. tostring(cc.RAYCAST_SWORD_CHARACTER_DISTANCE) .. ' studs.')
 end
 
 local function installBlockHook()
@@ -237,9 +245,65 @@ local function installBlockHook()
 	end
 end
 
+-- The half that was missing: the client can SWING at range once RAYCAST distance is
+-- raised, but the server validates the real distance and rejects anything > ~14.4 studs.
+-- This hook spoofs the outgoing attack packet's selfPosition to sit 14.399 studs from the
+-- target (and clears raycast validation), so the server accepts the hit. Mirrors the
+-- AttackEntity SendToServer hook in the original Vape source.
+local attackHookInstalled = false
+local function installAttackHook()
+	if attackHookInstalled or (getgenv and getgenv().__HitboxReachAttackHook) then
+		return
+	end
+	if typeof(hookmetamethod) ~= 'function' or typeof(getnamecallmethod) ~= 'function' then
+		warn('[Reach] Executor lacks hookmetamethod/getnamecallmethod — the server will REJECT hits past 14.4 studs, so reach cannot register. Use a more capable executor.')
+		return
+	end
+	local wrap = (typeof(newcclosure) == 'function') and newcclosure or function(f)
+		return f
+	end
+
+	local oldNamecall
+	oldNamecall = hookmetamethod(game, '__namecall', wrap(function(self, ...)
+		local method = getnamecallmethod()
+		if method == 'FireServer' or method == 'InvokeServer' then
+			local packet = (...)
+			if type(packet) == 'table' then
+				local validate = rawget(packet, 'validate')
+				if type(validate) == 'table' then
+					local sp = rawget(validate, 'selfPosition')
+					local tp = rawget(validate, 'targetPosition')
+					if
+						type(sp) == 'table'
+						and type(tp) == 'table'
+						and typeof(rawget(sp, 'value')) == 'Vector3'
+						and typeof(rawget(tp, 'value')) == 'Vector3'
+					then
+						local selfpos = rawget(sp, 'value')
+						local targetpos = rawget(tp, 'value')
+						local dist = (selfpos - targetpos).Magnitude
+						if dist > 14.399 then
+							validate.raycast = rawget(validate, 'raycast') or {}
+							sp.value = selfpos + CFrame.lookAt(selfpos, targetpos).LookVector * (dist - 14.399)
+						end
+					end
+				end
+			end
+		end
+		return oldNamecall(self, ...)
+	end))
+
+	attackHookInstalled = true
+	if getgenv then
+		getgenv().__HitboxReachAttackHook = true
+	end
+	print('[Reach] Server-side hit validation bypass installed.')
+end
+
 local function startReach()
 	applySwordReach()
 	installBlockHook()
+	installAttackHook()
 end
 
 -- Re-apply sword values after editing CONFIG live (placement/break read CONFIG automatically).
