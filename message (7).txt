@@ -366,12 +366,12 @@ startReach()
 -- Create the status light (green because hitboxesActive is true)
 createIndicator()
 
--- Toggle key: Num Lock
+-- Toggle key: Backquote (`) — the key above Tab
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if input.KeyCode == Enum.KeyCode.NumLock then
-		toggleHitboxes()
-	end
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.Backquote then
+        toggleHitboxes()
+    end
 end)
 
 if getgenv then
