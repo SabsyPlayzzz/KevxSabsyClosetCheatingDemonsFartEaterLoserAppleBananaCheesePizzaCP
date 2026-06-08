@@ -26,7 +26,7 @@ local CONFIG = {
 
 	-- ===== Reach =====
 	SwordReach = true,       -- applied distance = SwordRange + 2 (off = 14.4). Keep <= 18.
-	SwordRange = 15.12,
+	SwordRange = 14.89,
 }
 --===============================================================--
 
