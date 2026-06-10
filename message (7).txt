@@ -227,11 +227,46 @@ local function enableHitboxes()
 	print('[HitBoxes] Hitboxes turned ON')
 end
 
+-- FIX: Light re-creation helper (preserves your logic)
+local function ensureLight()
+	local playerGui = lplr:FindFirstChild("PlayerGui")
+	if not playerGui then
+		playerGui = lplr:WaitForChild("PlayerGui", 10)
+		if not playerGui then return end
+	end
+	-- Remove any stale light
+	local oldGui = playerGui:FindFirstChild("HitboxIndicator")
+	if oldGui then oldGui:Destroy() end
+	-- Create fresh
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "HitboxIndicator"
+	gui.Parent = playerGui
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0, 10, 0, 10)
+	frame.Position = UDim2.new(1, -14, 1, -14)
+	frame.AnchorPoint = Vector2.new(1, 1)
+	-- Set color based on current hitbox state
+	if CONFIG.HitboxMode == 'Sword' then
+		frame.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+	else
+		frame.BackgroundColor3 = hitboxesActive and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+	end
+	frame.BorderSizePixel = 0
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = frame
+	frame.Parent = gui
+	indicatorFrame = frame
+end
+
+-- FIX: Modified toggle – ensures light exists before updating color
 local function toggleHitboxes()
 	if CONFIG.HitboxMode ~= 'Player' then
 		warn('[HitBoxes] Toggle only works in Player mode. Set HitboxMode = "Player".')
 		return
 	end
+	-- Recreate the light if missing (fixes death/respawn issue)
+	ensureLight()
 	if hitboxesActive then
 		disableHitboxes()
 	else
@@ -334,27 +369,9 @@ end
 ----------------------------------------------------------------
 -- STATUS INDICATOR (bottom‑right light)
 ----------------------------------------------------------------
+-- NOTE: original createIndicator is replaced by ensureLight, but keep original name for compatibility
 local function createIndicator()
-	local playerGui = lplr:FindFirstChild("PlayerGui") or lplr:WaitForChild("PlayerGui", 10)
-	if not playerGui then return end
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "HitboxIndicator"
-	gui.Parent = playerGui
-
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(0, 10, 0, 10)               -- smaller dot
-	frame.Position = UDim2.new(1, -14, 1, -14)         -- tighter to the corner
-	frame.AnchorPoint = Vector2.new(1, 1)
-	frame.BackgroundColor3 = hitboxesActive and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
-	frame.BorderSizePixel = 0
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(1, 0)
-	corner.Parent = frame
-
-	frame.Parent = gui
-	indicatorFrame = frame
+	ensureLight()
 end
 
 ----------------------------------------------------------------
@@ -365,6 +382,11 @@ startReach()
 
 -- Create the status light (green because hitboxesActive is true)
 createIndicator()
+
+-- FIX: Recreate light automatically after respawn (death)
+lplr.CharacterAdded:Connect(function()
+	ensureLight()
+end)
 
 -- Toggle key: Backquote (`) — the key above Tab
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -383,5 +405,5 @@ if getgenv then
 	}
 end
 
-print('[HitBoxes+Reach] Ready — Hitbox: ' .. CONFIG.HitboxMode .. ' (NumLock toggles) | SwordReach: ' .. tostring(CONFIG.SwordReach))
+print('[HitBoxes+Reach] Ready — Hitbox: ' .. CONFIG.HitboxMode .. ' (Backquote toggles) | SwordReach: ' .. tostring(CONFIG.SwordReach))
 print('                  Green dot = hitboxes ON, Red dot = OFF')
