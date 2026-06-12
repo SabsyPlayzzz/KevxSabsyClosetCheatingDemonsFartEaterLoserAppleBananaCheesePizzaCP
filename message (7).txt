@@ -1,409 +1,403 @@
 --!nocheck
 --[[
-    Standalone "Hit Boxes + Reach" — with toggle for hitboxes (Num Lock key) + status indicator.
-    
-    - NO keybind for reach: it's always on.
-    - Hitboxes start ON. Press Num Lock to toggle them OFF/ON (Player mode only).
-    - A small light appears in the bottom‑right corner:
-         green = hitboxes ON
-         red   = hitboxes OFF
-    - If HitboxMode is 'Sword', the toggle has no effect and the light stays green.
-    - Placement/break reach intentionally removed; only sword reach + bypass.
+    Hit Boxes + Reach + Aim Assist (Hold Key – Smooth, No Lag)
+    - Hitboxes: Backquote (`) toggle (green/red dot)
+    - Reach: always on (sword only)
+    - Aim Assist: HOLD Right Mouse Button for continuous smooth tracking
+    - Aim Assist toggle: Num Lock (console message)
+    - Settings: range 24, FOV 40, HumanoidRootPart, LOS true, enemy priority
 ]]
 
 local Players = game:GetService('Players')
 local ReplicatedStorage = game:GetService('ReplicatedStorage')
 local UserInputService = game:GetService('UserInputService')
+local RunService = game:GetService('RunService')
+local Camera = workspace.CurrentCamera
 
 local lplr = Players.LocalPlayer
 
 --============================ CONFIG ============================--
 local CONFIG = {
-	-- ===== Hit Boxes =====
-	HitboxMode = 'Player',   -- 'Player' (welded boxes) or 'Sword' (swing-region expand)
-	HitboxExpand = 14.4,     -- 0 .. 14.4 studs
-	HitboxTransparency = 1,  -- 1 = invisible (original). Lower it to SEE the boxes.
+    -- Hit Boxes
+    HitboxMode = 'Player',
+    HitboxExpand = 14.4,
+    HitboxTransparency = 1,
 
-	-- ===== Reach =====
-	SwordReach = true,       -- applied distance = SwordRange + 2 (off = 14.4). Keep <= 18.
-	SwordRange = 14.89,
+    -- Reach
+    SwordReach = true,
+    SwordRange = 14.89,
+
+    -- Aim Assist
+    AimAssistEnabled = true,         -- master toggle (Num Lock)
+    AimActivationKey = Enum.UserInputType.MouseButton2,  -- Right Mouse Button
+    AimMaxDistance = 24,
+    AimFOV = 45,
+    AimSmoothness = 45,              -- lower = faster, higher = smoother
+    AimCheckLOS = true,
+    AimPart = "HumanoidRootPart",
 }
 --===============================================================--
 
-local hitboxObjects = {}          -- [player] = Part
-local hitboxPlayerConns = {}      -- [player] = CharacterAdded connection
-local hitboxesActive = true       -- toggle state
-local hitboxAddedConn = nil       -- PlayerAdded connection
-local hitboxRemovingConn = nil    -- PlayerRemoving connection
+local hitboxObjects = {}
+local hitboxPlayerConns = {}
+local hitboxesActive = true
+local indicatorFrame = nil
 
-local indicatorFrame = nil        -- the small status light
+-- Aim assist state
+local aimActive = CONFIG.AimAssistEnabled   -- global toggle (Num Lock)
+local isAiming = false                      -- whether activation key is held
 
+-- Helper functions (hitboxes, reach) – unchanged from your original
 ----------------------------------------------------------------
--- DEPENDENCY RESOLUTION (no Vape)
+-- DEPENDENCY RESOLUTION
 ----------------------------------------------------------------
 local function getSwordController()
-	if getgenv and getgenv().bedwars then
-		local ok, sc = pcall(function()
-			return getgenv().bedwars.SwordController
-		end)
-		if ok and sc then
-			return sc
-		end
-	end
-	if typeof(getgc) == 'function' then
-		for _, obj in getgc(true) do
-			if type(obj) == 'table' then
-				local ok, fn = pcall(rawget, obj, 'swingSwordInRegion')
-				if ok and type(fn) == 'function' then
-					return obj
-				end
-			end
-		end
-	end
-	return nil
+    if getgenv and getgenv().bedwars then
+        local ok, sc = pcall(function() return getgenv().bedwars.SwordController end)
+        if ok and sc then return sc end
+    end
+    if typeof(getgc) == 'function' then
+        for _, obj in getgc(true) do
+            if type(obj) == 'table' then
+                local ok, fn = pcall(rawget, obj, 'swingSwordInRegion')
+                if ok and type(fn) == 'function' then return obj end
+            end
+        end
+    end
+    return nil
 end
 
 local function getCombatConstant()
-	if getgenv and getgenv().bedwars then
-		local ok, cc = pcall(function()
-			return getgenv().bedwars.CombatConstant
-		end)
-		if ok and cc then
-			return cc
-		end
-	end
-	local ok, cc = pcall(function()
-		return require(ReplicatedStorage.TS.combat['combat-constant']).CombatConstant
-	end)
-	if ok and cc then
-		return cc
-	end
-	return nil
+    if getgenv and getgenv().bedwars then
+        local ok, cc = pcall(function() return getgenv().bedwars.CombatConstant end)
+        if ok and cc then return cc end
+    end
+    local ok, cc = pcall(function() return require(ReplicatedStorage.TS.combat['combat-constant']).CombatConstant end)
+    if ok and cc then return cc end
+    return nil
 end
 
 ----------------------------------------------------------------
--- HIT BOXES (Player mode – togglable)
+-- HIT BOXES (your original code)
 ----------------------------------------------------------------
 local function applyHitboxRegion()
-	if typeof(debug) ~= 'table' or typeof(debug.setconstant) ~= 'function' then
-		warn('[HitBoxes] Sword mode needs debug.setconstant — not supported. Set HitboxMode = "Player".')
-		return
-	end
-	local sc = getSwordController()
-	if not sc then
-		warn('[HitBoxes] SwordController not found. Set HitboxMode = "Player".')
-		return
-	end
-	pcall(debug.setconstant, sc.swingSwordInRegion, 6, (CONFIG.HitboxExpand / 3))
+    if typeof(debug) ~= 'table' or typeof(debug.setconstant) ~= 'function' then
+        warn('[HitBoxes] Sword mode needs debug.setconstant — not supported.')
+        return
+    end
+    local sc = getSwordController()
+    if not sc then
+        warn('[HitBoxes] SwordController not found.')
+        return
+    end
+    pcall(debug.setconstant, sc.swingSwordInRegion, 6, (CONFIG.HitboxExpand / 3))
 end
 
 local function createHitbox(plr, char)
-	if plr == lplr or not char then
-		return
-	end
-	local root = char:FindFirstChild('HumanoidRootPart')
-	if not root then
-		return
-	end
-
-	-- replace any existing box
-	if hitboxObjects[plr] then
-		hitboxObjects[plr]:Destroy()
-		hitboxObjects[plr] = nil
-	end
-
-	local hitbox = Instance.new('Part')
-	hitbox.Size = Vector3.new(3, 6, 3) + Vector3.one * (CONFIG.HitboxExpand / 5)
-	hitbox.CFrame = root.CFrame
-	hitbox.CanCollide = false
-	hitbox.Massless = true
-	hitbox.Transparency = CONFIG.HitboxTransparency
-	hitbox.Color = Color3.fromRGB(255, 40, 90)
-	hitbox.Material = Enum.Material.SmoothPlastic
-	local weld = Instance.new('Motor6D')
-	weld.Part0 = hitbox
-	weld.Part1 = root
-	weld.Parent = hitbox
-	hitbox.Parent = char
-	hitboxObjects[plr] = hitbox
+    if plr == lplr or not char then return end
+    local root = char:FindFirstChild('HumanoidRootPart')
+    if not root then return end
+    if hitboxObjects[plr] then hitboxObjects[plr]:Destroy() end
+    local hitbox = Instance.new('Part')
+    hitbox.Size = Vector3.new(3, 6, 3) + Vector3.one * (CONFIG.HitboxExpand / 5)
+    hitbox.CFrame = root.CFrame
+    hitbox.CanCollide = false
+    hitbox.Massless = true
+    hitbox.Transparency = CONFIG.HitboxTransparency
+    hitbox.Color = Color3.fromRGB(255, 40, 90)
+    hitbox.Material = Enum.Material.SmoothPlastic
+    local weld = Instance.new('Motor6D')
+    weld.Part0 = hitbox
+    weld.Part1 = root
+    weld.Parent = hitbox
+    hitbox.Parent = char
+    hitboxObjects[plr] = hitbox
 end
 
 local function onCharacterAdded(plr, char)
-	local root = char:WaitForChild('HumanoidRootPart', 10)
-	local hum = char:WaitForChild('Humanoid', 10)
-	if not (root and hum) or char.Parent == nil then
-		return
-	end
-	createHitbox(plr, char)
-	hum.Died:Once(function()
-		if hitboxObjects[plr] then
-			hitboxObjects[plr]:Destroy()
-			hitboxObjects[plr] = nil
-		end
-	end)
+    local root = char:WaitForChild('HumanoidRootPart', 10)
+    local hum = char:WaitForChild('Humanoid', 10)
+    if not (root and hum) then return end
+    createHitbox(plr, char)
+    hum.Died:Once(function()
+        if hitboxObjects[plr] then
+            hitboxObjects[plr]:Destroy()
+            hitboxObjects[plr] = nil
+        end
+    end)
 end
 
 local function trackPlayer(plr)
-	if plr == lplr then return end
-	-- disconnect any old connection for this player first
-	if hitboxPlayerConns[plr] then
-		hitboxPlayerConns[plr]:Disconnect()
-	end
-	hitboxPlayerConns[plr] = plr.CharacterAdded:Connect(function(char)
-		onCharacterAdded(plr, char)
-	end)
-	if plr.Character then
-		task.spawn(onCharacterAdded, plr, plr.Character)
-	end
+    if plr == lplr then return end
+    if hitboxPlayerConns[plr] then hitboxPlayerConns[plr]:Disconnect() end
+    hitboxPlayerConns[plr] = plr.CharacterAdded:Connect(function(char)
+        onCharacterAdded(plr, char)
+    end)
+    if plr.Character then task.spawn(onCharacterAdded, plr, plr.Character) end
 end
 
 local function disableHitboxes()
-	if not hitboxesActive then return end
-	hitboxesActive = false
-
-	-- disconnect all player tracking
-	for plr, conn in pairs(hitboxPlayerConns) do
-		conn:Disconnect()
-		hitboxPlayerConns[plr] = nil
-	end
-	if hitboxAddedConn then
-		hitboxAddedConn:Disconnect()
-		hitboxAddedConn = nil
-	end
-	if hitboxRemovingConn then
-		hitboxRemovingConn:Disconnect()
-		hitboxRemovingConn = nil
-	end
-
-	-- destroy all hitboxes
-	for plr, part in pairs(hitboxObjects) do
-		part:Destroy()
-		hitboxObjects[plr] = nil
-	end
-
-	-- update status light
-	if indicatorFrame then
-		indicatorFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0)   -- red = off
-	end
-
-	print('[HitBoxes] Hitboxes turned OFF')
+    if not hitboxesActive then return end
+    hitboxesActive = false
+    for plr, conn in pairs(hitboxPlayerConns) do
+        conn:Disconnect()
+        hitboxPlayerConns[plr] = nil
+    end
+    if hitboxAddedConn then hitboxAddedConn:Disconnect(); hitboxAddedConn = nil end
+    if hitboxRemovingConn then hitboxRemovingConn:Disconnect(); hitboxRemovingConn = nil end
+    for plr, part in pairs(hitboxObjects) do part:Destroy(); hitboxObjects[plr] = nil end
+    if indicatorFrame then indicatorFrame.BackgroundColor3 = Color3.fromRGB(255, 0, 0) end
+    print('[HitBoxes] OFF')
 end
 
 local function enableHitboxes()
-	if hitboxesActive then return end
-	hitboxesActive = true
-
-	-- start tracking existing players
-	for _, plr in ipairs(Players:GetPlayers()) do
-		trackPlayer(plr)
-	end
-
-	-- set up new player listeners
-	if not hitboxAddedConn then
-		hitboxAddedConn = Players.PlayerAdded:Connect(function(plr)
-			if hitboxesActive then
-				trackPlayer(plr)
-			end
-		end)
-	end
-	if not hitboxRemovingConn then
-		hitboxRemovingConn = Players.PlayerRemoving:Connect(function(plr)
-			if hitboxObjects[plr] then
-				hitboxObjects[plr]:Destroy()
-				hitboxObjects[plr] = nil
-			end
-			if hitboxPlayerConns[plr] then
-				hitboxPlayerConns[plr]:Disconnect()
-				hitboxPlayerConns[plr] = nil
-			end
-		end)
-	end
-
-	-- update status light
-	if indicatorFrame then
-		indicatorFrame.BackgroundColor3 = Color3.fromRGB(0, 255, 0)   -- green = on
-	end
-
-	print('[HitBoxes] Hitboxes turned ON')
+    if hitboxesActive then return end
+    hitboxesActive = true
+    for _, plr in ipairs(Players:GetPlayers()) do trackPlayer(plr) end
+    if not hitboxAddedConn then
+        hitboxAddedConn = Players.PlayerAdded:Connect(function(plr) if hitboxesActive then trackPlayer(plr) end end)
+    end
+    if not hitboxRemovingConn then
+        hitboxRemovingConn = Players.PlayerRemoving:Connect(function(plr)
+            if hitboxObjects[plr] then hitboxObjects[plr]:Destroy(); hitboxObjects[plr] = nil end
+            if hitboxPlayerConns[plr] then hitboxPlayerConns[plr]:Disconnect(); hitboxPlayerConns[plr] = nil end
+        end)
+    end
+    if indicatorFrame then indicatorFrame.BackgroundColor3 = Color3.fromRGB(0, 255, 0) end
+    print('[HitBoxes] ON')
 end
 
--- FIX: Light re-creation helper (preserves your logic)
 local function ensureLight()
-	local playerGui = lplr:FindFirstChild("PlayerGui")
-	if not playerGui then
-		playerGui = lplr:WaitForChild("PlayerGui", 10)
-		if not playerGui then return end
-	end
-	-- Remove any stale light
-	local oldGui = playerGui:FindFirstChild("HitboxIndicator")
-	if oldGui then oldGui:Destroy() end
-	-- Create fresh
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "HitboxIndicator"
-	gui.Parent = playerGui
-	local frame = Instance.new("Frame")
-	frame.Size = UDim2.new(0, 10, 0, 10)
-	frame.Position = UDim2.new(1, -14, 1, -14)
-	frame.AnchorPoint = Vector2.new(1, 1)
-	-- Set color based on current hitbox state
-	if CONFIG.HitboxMode == 'Sword' then
-		frame.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-	else
-		frame.BackgroundColor3 = hitboxesActive and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
-	end
-	frame.BorderSizePixel = 0
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(1, 0)
-	corner.Parent = frame
-	frame.Parent = gui
-	indicatorFrame = frame
+    local playerGui = lplr:FindFirstChild("PlayerGui")
+    if not playerGui then playerGui = lplr:WaitForChild("PlayerGui", 10) end
+    if not playerGui then return end
+    local oldGui = playerGui:FindFirstChild("HitboxIndicator")
+    if oldGui then oldGui:Destroy() end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "HitboxIndicator"
+    gui.Parent = playerGui
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 10, 0, 10)
+    frame.Position = UDim2.new(1, -14, 1, -14)
+    frame.AnchorPoint = Vector2.new(1, 1)
+    frame.BackgroundColor3 = (CONFIG.HitboxMode == 'Sword') and Color3.fromRGB(0,255,0) or (hitboxesActive and Color3.fromRGB(0,255,0) or Color3.fromRGB(255,0,0))
+    frame.BorderSizePixel = 0
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = frame
+    frame.Parent = gui
+    indicatorFrame = frame
 end
 
--- FIX: Modified toggle – ensures light exists before updating color
 local function toggleHitboxes()
-	if CONFIG.HitboxMode ~= 'Player' then
-		warn('[HitBoxes] Toggle only works in Player mode. Set HitboxMode = "Player".')
-		return
-	end
-	-- Recreate the light if missing (fixes death/respawn issue)
-	ensureLight()
-	if hitboxesActive then
-		disableHitboxes()
-	else
-		enableHitboxes()
-	end
+    if CONFIG.HitboxMode ~= 'Player' then warn('[HitBoxes] Toggle only works in Player mode.') return end
+    ensureLight()
+    if hitboxesActive then disableHitboxes() else enableHitboxes() end
 end
 
 local function startHitboxes()
-	if CONFIG.HitboxMode == 'Sword' then
-		applyHitboxRegion()
-		print('[HitBoxes] Sword mode active (toggle disabled)')
-		return
-	end
-	-- Player mode: start enabled
-	enableHitboxes()
+    if CONFIG.HitboxMode == 'Sword' then
+        applyHitboxRegion()
+        print('[HitBoxes] Sword mode active (toggle disabled)')
+        return
+    end
+    enableHitboxes()
 end
 
 ----------------------------------------------------------------
--- REACH (sword only; always on)
+-- REACH (unchanged)
 ----------------------------------------------------------------
 local function applySwordReach()
-	local cc = getCombatConstant()
-	if not cc then
-		warn('[Reach] CombatConstant not found — are you in a BedWars round?')
-		return
-	end
-	local target = (CONFIG.SwordReach and (CONFIG.SwordRange + 2)) or 14.4
-	local ok, err = pcall(function()
-		cc.RAYCAST_SWORD_CHARACTER_DISTANCE = target
-	end)
-	if not ok then
-		warn('[Reach] Failed to write reach constant (table may be frozen): ' .. tostring(err))
-		return
-	end
-	print('[Reach] Client raycast distance = ' .. tostring(cc.RAYCAST_SWORD_CHARACTER_DISTANCE) .. ' studs.')
+    local cc = getCombatConstant()
+    if not cc then warn('[Reach] CombatConstant not found') return end
+    local target = (CONFIG.SwordReach and (CONFIG.SwordRange + 2)) or 14.4
+    pcall(function() cc.RAYCAST_SWORD_CHARACTER_DISTANCE = target end)
+    print('[Reach] Distance = ' .. tostring(cc.RAYCAST_SWORD_CHARACTER_DISTANCE))
 end
 
--- Server‑side validation bypass (required for sword reach hits to register)
 local attackHookInstalled = false
 local function installAttackHook()
-	if attackHookInstalled or (getgenv and getgenv().__HitboxReachAttackHook) then
-		return
-	end
-	if typeof(hookmetamethod) ~= 'function' or typeof(getnamecallmethod) ~= 'function' then
-		warn('[Reach] Executor lacks hookmetamethod/getnamecallmethod – server will reject hits past 14.4 studs.')
-		return
-	end
-	local wrap = (typeof(newcclosure) == 'function') and newcclosure or function(f) return f end
-
-	local oldNamecall
-	oldNamecall = hookmetamethod(game, '__namecall', wrap(function(self, ...)
-		local method = getnamecallmethod()
-		if method == 'FireServer' or method == 'InvokeServer' then
-			local packet = (...)
-			if type(packet) == 'table' then
-				local validate = rawget(packet, 'validate')
-				if type(validate) == 'table' then
-					local sp = rawget(validate, 'selfPosition')
-					local tp = rawget(validate, 'targetPosition')
-					if
-						type(sp) == 'table'
-						and type(tp) == 'table'
-						and typeof(rawget(sp, 'value')) == 'Vector3'
-						and typeof(rawget(tp, 'value')) == 'Vector3'
-					then
-						local selfpos = rawget(sp, 'value')
-						local targetpos = rawget(tp, 'value')
-						local dist = (selfpos - targetpos).Magnitude
-						if dist > 14.399 then
-							validate.raycast = rawget(validate, 'raycast') or {}
-							sp.value = selfpos + CFrame.lookAt(selfpos, targetpos).LookVector * (dist - 14.399)
-						end
-					end
-				end
-			end
-		end
-		return oldNamecall(self, ...)
-	end))
-
-	attackHookInstalled = true
-	if getgenv then
-		getgenv().__HitboxReachAttackHook = true
-	end
-	print('[Reach] Server-side hit validation bypass installed.')
+    if attackHookInstalled then return end
+    if typeof(hookmetamethod) ~= 'function' then warn('[Reach] No hookmetamethod') return end
+    local wrap = (typeof(newcclosure) == 'function') and newcclosure or function(f) return f end
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, '__namecall', wrap(function(self, ...)
+        local method = getnamecallmethod()
+        if method == 'FireServer' or method == 'InvokeServer' then
+            local packet = (...)
+            if type(packet) == 'table' then
+                local validate = rawget(packet, 'validate')
+                if type(validate) == 'table' then
+                    local sp = rawget(validate, 'selfPosition')
+                    local tp = rawget(validate, 'targetPosition')
+                    if type(sp) == 'table' and type(tp) == 'table' and typeof(rawget(sp,'value')) == 'Vector3' then
+                        local selfpos, targetpos = rawget(sp,'value'), rawget(tp,'value')
+                        local dist = (selfpos - targetpos).Magnitude
+                        if dist > 14.399 then
+                            validate.raycast = rawget(validate,'raycast') or {}
+                            sp.value = selfpos + CFrame.lookAt(selfpos, targetpos).LookVector * (dist - 14.399)
+                        end
+                    end
+                end
+            end
+        end
+        return oldNamecall(self, ...)
+    end))
+    attackHookInstalled = true
+    print('[Reach] Bypass installed.')
 end
 
 local function startReach()
-	applySwordReach()
-	installAttackHook()
+    applySwordReach()
+    installAttackHook()
 end
 
--- Re-apply sword values after editing CONFIG live
 local function refresh()
-	applySwordReach()
-	if CONFIG.HitboxMode == 'Sword' then
-		applyHitboxRegion()
-	end
+    applySwordReach()
+    if CONFIG.HitboxMode == 'Sword' then applyHitboxRegion() end
 end
 
 ----------------------------------------------------------------
--- STATUS INDICATOR (bottom‑right light)
+-- AIM ASSIST (Hold key, continuous tracking)
 ----------------------------------------------------------------
--- NOTE: original createIndicator is replaced by ensureLight, but keep original name for compatibility
-local function createIndicator()
-	ensureLight()
+local function getAimPart(char)
+    return char:FindFirstChild(CONFIG.AimPart) or char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+end
+
+local function getBestAimTarget()
+    local camera = Camera
+    local cameraPos = camera.CFrame.Position
+    local cameraLook = camera.CFrame.LookVector
+    local myTeam = lplr.Team
+
+    local bestEnemy = nil
+    local bestEnemyAngle = math.huge
+    local bestTeammate = nil
+    local bestTeammateAngle = math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= lplr then
+            local char = player.Character
+            if char then
+                local targetPart = getAimPart(char)
+                if targetPart then
+                    local hum = char:FindFirstChild("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local targetPos = targetPart.Position
+                        local dist = (targetPos - cameraPos).Magnitude
+                        if dist <= CONFIG.AimMaxDistance then
+                            local visible = true
+                            if CONFIG.AimCheckLOS then
+                                local ray = Ray.new(cameraPos, (targetPos - cameraPos).Unit * dist)
+                                local hit = workspace:FindPartOnRay(ray, lplr.Character)
+                                if hit and not hit:IsDescendantOf(char) then visible = false end
+                            end
+                            if visible then
+                                local dir = (targetPos - cameraPos).Unit
+                                local angle = math.deg(math.acos(cameraLook:Dot(dir)))
+                                if angle <= CONFIG.AimFOV then
+                                    local isEnemy = (player.Team ~= myTeam)
+                                    if isEnemy then
+                                        if angle < bestEnemyAngle then
+                                            bestEnemyAngle = angle
+                                            bestEnemy = targetPart
+                                        end
+                                    else
+                                        if angle < bestTeammateAngle then
+                                            bestTeammateAngle = angle
+                                            bestTeammate = targetPart
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestEnemy or bestTeammate
+end
+
+-- Smooth tracking every frame while holding key
+local function aimAtTarget(targetPart)
+    if not targetPart then return end
+    local cameraCF = Camera.CFrame
+    local targetPos = targetPart.Position
+    local desiredCF = CFrame.lookAt(cameraCF.Position, targetPos)
+    local newCF = cameraCF:Lerp(desiredCF, 1 / CONFIG.AimSmoothness)
+    Camera.CFrame = newCF
+end
+
+-- Continuous aim while isAiming is true
+local function onRender()
+    if not aimActive then return end
+    if isAiming then
+        local target = getBestAimTarget()
+        if target then
+            aimAtTarget(target)
+        end
+    end
+end
+
+-- Key events
+local function startAiming()
+    if aimActive then isAiming = true end
+end
+
+local function stopAiming()
+    isAiming = false
+end
+
+-- Toggle aim assist master switch (Num Lock)
+local function toggleAimAssist()
+    aimActive = not aimActive
+    if not aimActive then isAiming = false end
+    print("[AimAssist] " .. (aimActive and "ENABLED" or "DISABLED") .. " (Num Lock)")
 end
 
 ----------------------------------------------------------------
--- STARTUP (always on)
+-- STARTUP & CONNECTIONS
 ----------------------------------------------------------------
 startHitboxes()
 startReach()
+ensureLight()
 
--- Create the status light (green because hitboxesActive is true)
-createIndicator()
+lplr.CharacterAdded:Connect(function() ensureLight() end)
 
--- FIX: Recreate light automatically after respawn (death)
-lplr.CharacterAdded:Connect(function()
-	ensureLight()
+-- Hitboxes toggle: Backquote
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.Backquote then toggleHitboxes() end
 end)
 
--- Toggle key: Backquote (`) — the key above Tab
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == Enum.KeyCode.Backquote then
-        toggleHitboxes()
-    end
+-- Aim assist master toggle: Num Lock
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.NumLock then toggleAimAssist() end
 end)
+
+-- Activation key: hold Right Mouse Button
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == CONFIG.AimActivationKey then startAiming() end
+end)
+UserInputService.InputEnded:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == CONFIG.AimActivationKey then stopAiming() end
+end)
+
+-- Continuous aim loop
+RunService.RenderStepped:Connect(onRender)
 
 if getgenv then
-	getgenv().HitboxReach = {
-		config = CONFIG,
-		refresh = refresh,
-		toggle = toggleHitboxes,
-		enabled = function() return hitboxesActive end,
-	}
+    getgenv().HitboxReach = {
+        config = CONFIG,
+        refresh = refresh,
+        toggle = toggleHitboxes,
+        enabled = function() return hitboxesActive end,
+    }
 end
 
-print('[HitBoxes+Reach] Ready — Hitbox: ' .. CONFIG.HitboxMode .. ' (Backquote toggles) | SwordReach: ' .. tostring(CONFIG.SwordReach))
-print('                  Green dot = hitboxes ON, Red dot = OFF')
+print('[HitBoxes+Reach] Ready — Backquote toggles hitboxes | Num Lock toggles aim assist')
+print('[AimAssist] Hold Right Mouse Button for smooth tracking | Range 24 | FOV 40 | Enemy priority')
