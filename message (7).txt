@@ -32,7 +32,7 @@ local CONFIG = {
     AimActivationKey = Enum.UserInputType.MouseButton2,  -- Right Mouse Button
     AimMaxDistance = 24,
     AimFOV = 45,
-    AimSmoothness = 45,              -- lower = faster, higher = smoother
+    AimSmoothness = 52,              -- lower = faster, higher = smoother
     AimCheckLOS = true,
     AimPart = "HumanoidRootPart",
 }
