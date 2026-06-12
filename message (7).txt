@@ -6,6 +6,7 @@
     - Aim Assist: HOLD Right Mouse Button for continuous smooth tracking
     - Aim Assist toggle: Num Lock (console message)
     - Settings: range 24, FOV 40, HumanoidRootPart, LOS true, enemy priority
+    - NEW: Aim assist works ONLY in first‑person view
 ]]
 
 local Players = game:GetService('Players')
@@ -30,9 +31,9 @@ local CONFIG = {
     -- Aim Assist
     AimAssistEnabled = true,         -- master toggle (Num Lock)
     AimActivationKey = Enum.UserInputType.MouseButton2,  -- Right Mouse Button
-    AimMaxDistance = 24,
-    AimFOV = 45,
-    AimSmoothness = 52,              -- lower = faster, higher = smoother
+    AimMaxDistance = 20,
+    AimFOV = 55,
+    AimSmoothness = 40,              -- lower = faster, higher = smoother
     AimCheckLOS = true,
     AimPart = "HumanoidRootPart",
 }
@@ -258,7 +259,7 @@ local function refresh()
 end
 
 ----------------------------------------------------------------
--- AIM ASSIST (Hold key, continuous tracking)
+-- AIM ASSIST (Hold key, continuous tracking – FIRST PERSON ONLY)
 ----------------------------------------------------------------
 local function getAimPart(char)
     return char:FindFirstChild(CONFIG.AimPart) or char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
@@ -319,7 +320,7 @@ local function getBestAimTarget()
     return bestEnemy or bestTeammate
 end
 
--- Smooth tracking every frame while holding key
+-- Smooth tracking every frame while holding key (first‑person only)
 local function aimAtTarget(targetPart)
     if not targetPart then return end
     local cameraCF = Camera.CFrame
@@ -329,10 +330,33 @@ local function aimAtTarget(targetPart)
     Camera.CFrame = newCF
 end
 
--- Continuous aim while isAiming is true
+-- NEW: detect if the camera is in first‑person view
+local function isFirstPerson()
+    local char = lplr.Character
+    if not char then return false end
+    local head = char:FindFirstChild("Head")
+    local camera = Camera
+
+    -- Method 1: Roblox's standard attach mode with subject = head/humanoid
+    if camera.CameraType == Enum.CameraType.Attach and camera.CameraSubject then
+        local subject = camera.CameraSubject
+        if subject == char:FindFirstChild("Humanoid") or subject == head then
+            return true
+        end
+    end
+
+    -- Method 2 (fallback): camera position is very close to the head
+    if head then
+        local dist = (camera.CFrame.Position - head.Position).Magnitude
+        if dist < 1 then return true end
+    end
+    return false
+end
+
+-- Continuous aim only if aimActive, key held, AND first‑person
 local function onRender()
     if not aimActive then return end
-    if isAiming then
+    if isAiming and isFirstPerson() then
         local target = getBestAimTarget()
         if target then
             aimAtTarget(target)
@@ -387,7 +411,7 @@ UserInputService.InputEnded:Connect(function(input, gp)
     if input.UserInputType == CONFIG.AimActivationKey then stopAiming() end
 end)
 
--- Continuous aim loop
+-- Continuous aim loop (first‑person check inside onRender)
 RunService.RenderStepped:Connect(onRender)
 
 if getgenv then
@@ -400,4 +424,4 @@ if getgenv then
 end
 
 print('[HitBoxes+Reach] Ready — Backquote toggles hitboxes | Num Lock toggles aim assist')
-print('[AimAssist] Hold Right Mouse Button for smooth tracking | Range 24 | FOV 40 | Enemy priority')
+print('[AimAssist] Hold Right Mouse Button for smooth tracking (only works in FIRST PERSON) | Range 24 | FOV 40 | Enemy priority')
